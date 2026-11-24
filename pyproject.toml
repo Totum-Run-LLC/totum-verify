@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "totum-verify"
-version = "0.2.1"
+version = "0.2.2"
 description = "Hermetic public-chain and Ed25519 receipt verifier for the Totum audit ledger."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -31,7 +31,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://totum.run/verify"
+Homepage = "https://totum.run/transparency/verify"
 Source = "https://github.com/Totum-Run-LLC/totum-verify"
 Issues = "https://github.com/Totum-Run-LLC/totum-verify/issues"
 Changelog = "https://github.com/Totum-Run-LLC/totum-verify/blob/main/CHANGELOG.md"

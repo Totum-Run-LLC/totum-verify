@@ -88,7 +88,7 @@ WELL_KNOWN_PATHS = {
     'checkpoints': '/.well-known/atelier_checkpoints.jsonl',
 }
 _USER_AGENT = (
-    "totum-verify/0.2.1 "
+    "totum-verify/0.2.0 "
     "(+https://github.com/Totum-Run-LLC/totum-verify)"
 )
 _HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$")
@@ -525,6 +525,8 @@ def verify_chain(feed_paths=None, meta_path=None, checkpoints_path=None, keys_pa
         # ORIGINAL spool shape — the API includes a `record` field for this.
         for idx, raw in enumerate(feed_rows):
             if not isinstance(raw, dict):
+                if first_break_index is None:
+                    first_break_index = idx
                 continue
             has_chain_fields = all(
                 field in raw
@@ -599,36 +601,37 @@ def verify_chain(feed_paths=None, meta_path=None, checkpoints_path=None, keys_pa
         pre_chain_count = -1
 
     # Detect remote --chain-id slice mode: feed_rows is a per-chain-id subset
-    # of the GLOBAL ledger. Hash linkage spans chain_ids globally, so a slice
-    # cannot be re-walked in isolation (its first row's prev_event_hash points
-    # to a row in a different chain_id). In this mode we skip the hash walk
-    # entirely — integrity is guaranteed by the signed head_hash from
-    # checkpoints.jsonl, which covers the WHOLE ledger.
+    # of the GLOBAL ledger. Hash linkage spans chain_ids globally, so the first
+    # row's prev_event_hash points to a row in a different chain_id. We skip
+    # checking the slice's first row against genesis_hash, while STILL walking
+    # every row's event_hash, strictly monotonic seq, contiguous prev_event_hash
+    # links, and binding slice runs against verified signed checkpoints.
+    all_seqs_valid_int = all(
+        isinstance(r.get("seq"), int) and not isinstance(r.get("seq"), bool) and r["seq"] >= 1
+        for _, r in chained_rows
+    )
     is_chain_id_slice = (
         feed_rows is not None
-        and chained_rows
-        and chained_rows[0][1].get("seq", 1) != 1
+        and bool(chained_rows)
+        and all_seqs_valid_int
+        and min(r["seq"] for _, r in chained_rows) > 1
     )
-    if is_chain_id_slice:
-        chained_rows.sort(key=lambda x: x[1].get("seq", 0))
-        # Track length + head from slice but do not enforce link integrity here.
-        length = len(chained_rows)
-        head_hash = chained_rows[-1][1].get("event_hash", "")
-        chained_rows = []  # skip the walk loop
 
-    # Walk the chained rows
+    # Walk the chained rows (full chain AND --chain-id slices)
     walked_full_chain = False
     hash_by_seq: dict[int, str] = {}
     if chained_rows:
-        walked_full_chain = True
-        # Sort by seq (should already be sorted)
-        chained_rows.sort(key=lambda x: x[1].get("seq", 0))
+        walked_full_chain = not is_chain_id_slice
+        if not is_chain_id_slice and all_seqs_valid_int:
+            # Sort by seq in full-chain mode (supports merged multi-feed files)
+            chained_rows.sort(key=lambda x: x[1].get("seq", 0))
 
         # Walk the chained rows
         expected_prev = genesis_hash
         expected_seq = 1
+        prev_seq = None
 
-        for chain_idx, rec in chained_rows:
+        for pos, (chain_idx, rec) in enumerate(chained_rows):
             stored_prev = rec.get("prev_event_hash", "")
             stored_hash = rec.get("event_hash", "")
             stored_seq = rec.get("seq", -1)
@@ -636,38 +639,63 @@ def verify_chain(feed_paths=None, meta_path=None, checkpoints_path=None, keys_pa
             # Build payload (exclude computed fields)
             payload = {k: v for k, v in rec.items() if k not in _COMPUTED_FIELDS}
             payload_bytes = _canonical(payload)
-            expected_hash = _compute_event_hash(stored_prev, payload_bytes)
+            try:
+                expected_hash = (
+                    _compute_event_hash(stored_prev, payload_bytes)
+                    if isinstance(stored_prev, str)
+                    else None
+                )
+            except UnicodeEncodeError:
+                expected_hash = None
 
             ok_this_line = True
 
-            # Check prev_event_hash
-            if stored_prev != expected_prev:
+            # Check event_hash on every row (including --chain-id slices)
+            if (
+                not isinstance(stored_hash, str)
+                or not stored_hash
+                or expected_hash is None
+                or stored_hash != expected_hash
+            ):
                 ok_this_line = False
 
-            # Check event_hash
-            if stored_hash != expected_hash:
+            seq_is_int = isinstance(stored_seq, int) and not isinstance(stored_seq, bool)
+            if not seq_is_int or stored_seq < 1:
                 ok_this_line = False
 
-            # Check seq
-            if stored_seq != expected_seq:
-                ok_this_line = False
+            if is_chain_id_slice:
+                if not isinstance(stored_prev, str) or not stored_prev:
+                    ok_this_line = False
+                if pos > 0:
+                    if not seq_is_int or prev_seq is None or stored_seq <= prev_seq:
+                        ok_this_line = False
+                    elif stored_seq == prev_seq + 1 and stored_prev != expected_prev:
+                        ok_this_line = False
+            else:
+                if stored_prev != expected_prev:
+                    ok_this_line = False
+                if not seq_is_int or stored_seq != expected_seq:
+                    ok_this_line = False
 
             if not ok_this_line and first_break_index is None:
                 first_break_index = chain_idx
 
-            if isinstance(stored_seq, int) and isinstance(stored_hash, str):
+            if seq_is_int and isinstance(stored_hash, str) and stored_hash:
                 hash_by_seq[stored_seq] = stored_hash
 
             length += 1
-            head_hash = stored_hash
-            expected_prev = stored_hash
-            expected_seq = stored_seq + 1 if isinstance(stored_seq, int) else expected_seq + 1
+            head_hash = stored_hash if isinstance(stored_hash, str) else ""
+            expected_prev = head_hash
+            if seq_is_int:
+                prev_seq = stored_seq
+            expected_seq = stored_seq + 1 if seq_is_int else expected_seq + 1
 
     # Verify checkpoints if provided (separate verification, affects ok only if requested)
     checkpoint_count = 0
     last_signed_at = None
     last_kid = None
     checkpoint_break = False
+    anchored_slice_seqs: set[int] = set()
 
     # Only verify checkpoints if we have both checkpoints and keys (from bytes or files)
     has_checkpoints = False
@@ -751,23 +779,57 @@ def verify_chain(feed_paths=None, meta_path=None, checkpoints_path=None, keys_pa
                 checkpoint_break = True
                 continue
 
-            # Bind signed checkpoint head_hash & length to the walked chain when available
+            # Bind signed checkpoint head_hash & length to the walked chain/slice
+            ckpt_len = checkpoint.get("length")
+            ckpt_head = checkpoint.get("head_hash")
+            ckpt_len_valid = isinstance(ckpt_len, int) and not isinstance(ckpt_len, bool)
             if walked_full_chain:
-                ckpt_len = checkpoint.get("length")
-                ckpt_head = checkpoint.get("head_hash")
-                if isinstance(ckpt_len, int) and not isinstance(ckpt_len, bool):
-                    if ckpt_len > length or ckpt_len < 1:
+                if (
+                    not ckpt_len_valid
+                    or ckpt_len < 1
+                    or ckpt_len > length
+                    or not isinstance(ckpt_head, str)
+                    or not ckpt_head
+                    or hash_by_seq.get(ckpt_len) != ckpt_head
+                ):
+                    checkpoint_break = True
+                    continue
+            elif is_chain_id_slice:
+                if ckpt_len_valid and ckpt_len in hash_by_seq:
+                    if (
+                        not isinstance(ckpt_head, str)
+                        or not ckpt_head
+                        or hash_by_seq.get(ckpt_len) != ckpt_head
+                    ):
                         checkpoint_break = True
                         continue
-                    if isinstance(ckpt_head, str) and ckpt_head:
-                        if hash_by_seq.get(ckpt_len) != ckpt_head:
-                            checkpoint_break = True
-                            continue
+                    anchored_slice_seqs.add(ckpt_len)
 
             # Signature (and chain binding, when applicable) valid
             checkpoint_count += 1
             last_signed_at = checkpoint.get("ts_utc")
             last_kid = kid
+
+    if is_chain_id_slice:
+        # Fail closed unless every contiguous run in the partial slice is
+        # anchored to at least one verified signed checkpoint (length, head_hash).
+        ordered_seqs = sorted(hash_by_seq)
+        if not ordered_seqs:
+            checkpoint_break = True
+        else:
+            run_anchored = False
+            for pos_s, seq_val in enumerate(ordered_seqs):
+                if seq_val in anchored_slice_seqs:
+                    run_anchored = True
+                is_run_end = (
+                    pos_s == len(ordered_seqs) - 1
+                    or ordered_seqs[pos_s + 1] != seq_val + 1
+                )
+                if is_run_end:
+                    if not run_anchored:
+                        checkpoint_break = True
+                        break
+                    run_anchored = False
 
     if require_checkpoints and checkpoint_count == 0:
         checkpoint_break = True

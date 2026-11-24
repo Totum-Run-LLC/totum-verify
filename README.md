@@ -170,7 +170,7 @@ assert chain_result["ok"] is True
 
 ## Links & Security
 
-- Live proof portal: [`https://totum.run/verify`](https://totum.run/verify)
+- Live proof portal: [`https://totum.run/transparency/verify`](https://totum.run/transparency/verify)
 - Security policy & vulnerability disclosure: [`SECURITY.md`](./SECURITY.md)
 - Contributing guide: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - License: [MIT](./LICENSE)

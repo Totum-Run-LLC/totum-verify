@@ -314,3 +314,73 @@ def test_checkpoint_head_hash_and_truncation_detected(tmp_path):
     assert verify_chain(feed_paths=[feed_path], meta_path=meta_path, checkpoints_path=_ckpt(head_hash, length), keys_path=keys_path)["ok"] is True
     assert verify_chain(feed_paths=[feed_path], meta_path=meta_path, checkpoints_path=_ckpt("0" * 64, length), keys_path=keys_path)["ok"] is False
     assert verify_chain(feed_paths=[feed_path], meta_path=meta_path, checkpoints_path=_ckpt(head_hash, length + 2), keys_path=keys_path)["ok"] is False
+
+
+def test_remote_nonobject_feed_rows_fail_closed():
+    priv, pub_b64, kid = _make_keypair("k-nondict")
+    meta_bytes = _canonical({"chain_id": "test", "alg": "sha256", "schema_version": 1})
+    keys_bytes = _canonical({"current": kid, "keys": {kid: {"alg": "ed25519", "pub_b64": pub_b64}}})
+    ckpt_u = {"kid": kid, "ts_utc": "2026-11-23T12:00:00Z", "head_hash": "a" * 64, "length": 1, "schema_version": 1}
+    ckpt_b = (_canonical({**ckpt_u, "sig_b64": base64.b64encode(priv.sign(_canonical(ckpt_u))).decode()}).decode() + "\n").encode()
+    res = verify_chain(
+        meta_bytes=meta_bytes,
+        checkpoints_bytes=ckpt_b,
+        keys_bytes=keys_bytes,
+        feed_rows=["nope", 1, None, ["x"]],
+        require_checkpoints=True,
+    )
+    assert res["ok"] is False
+    assert res["first_break_index"] == 0
+
+
+def test_remote_chain_id_slice_walks_and_always_requires_checkpoint_anchor(tmp_path):
+    feed_path, meta_path, head_hash, length = _build_chain(tmp_path, count=6)
+    rows = [json.loads(line) for line in feed_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    meta_bytes = meta_path.read_bytes()
+    priv, pub_b64, kid = _make_keypair("k-slice")
+    keys_bytes = _canonical({"current": kid, "keys": {kid: {"alg": "ed25519", "pub_b64": pub_b64}}})
+
+    def _ckpt(h: str, n: int) -> bytes:
+        u = {"kid": kid, "ts_utc": "2026-11-23T12:00:00Z", "head_hash": h, "length": n, "schema_version": 1}
+        return (_canonical({**u, "sig_b64": base64.b64encode(priv.sign(_canonical(u))).decode()}).decode() + "\n").encode()
+
+    valid_slice = [dict(rows[4]), dict(rows[5])]
+    good_ckpt = _ckpt(head_hash, length)
+
+    res_ok = verify_chain(
+        meta_bytes=meta_bytes,
+        checkpoints_bytes=good_ckpt,
+        keys_bytes=keys_bytes,
+        feed_rows=valid_slice,
+        require_checkpoints=True,
+    )
+    assert res_ok["ok"] is True and res_ok["length"] == 2
+
+    tampered = [dict(rows[4]), dict(rows[5])]
+    tampered[0]["data"] = "tampered"
+    assert verify_chain(
+        meta_bytes=meta_bytes, checkpoints_bytes=good_ckpt, keys_bytes=keys_bytes, feed_rows=tampered, require_checkpoints=True
+    )["ok"] is False
+
+    assert verify_chain(
+        meta_bytes=meta_bytes, checkpoints_bytes=_ckpt("f" * 64, 6), keys_bytes=keys_bytes, feed_rows=valid_slice, require_checkpoints=True
+    )["ok"] is False
+
+    assert verify_chain(
+        meta_bytes=meta_bytes, checkpoints_bytes=_ckpt("a" * 64, 100), keys_bytes=keys_bytes, feed_rows=valid_slice, require_checkpoints=True
+    )["ok"] is False
+
+    assert verify_chain(
+        meta_bytes=meta_bytes, checkpoints_bytes=good_ckpt, keys_bytes=keys_bytes, feed_rows=[dict(rows[4]), dict(rows[0])], require_checkpoints=True
+    )["ok"] is False
+
+    # Missing/empty checkpoints or keys on a non-genesis slice MUST fail closed even with require_checkpoints=False
+    assert verify_chain(
+        meta_bytes=meta_bytes, checkpoints_bytes=b"", keys_bytes=keys_bytes, feed_rows=valid_slice, require_checkpoints=False
+    )["ok"] is False
+    assert verify_chain(
+        meta_bytes=meta_bytes, checkpoints_bytes=good_ckpt, keys_bytes=b"", feed_rows=valid_slice, require_checkpoints=False
+    )["ok"] is False
+    assert verify_chain(
+        meta_bytes=meta_bytes, checkpoints_bytes=None, keys_bytes=None, feed_rows=valid_slice, require_checkpoints=False
+    )["ok"] is False

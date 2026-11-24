@@ -2,6 +2,15 @@
 
 All notable changes to `totum-verify` are documented in this file.
 
+## [0.2.2] - 2026-11-23
+
+### Security & Hardening
+- Fail closed (`first_break_index` set) on non-object items in remote `feed_rows` instead of skipping them.
+- Walk every row's `event_hash`, strictly monotonic integer `seq`, and contiguous `prev_event_hash` links in remote `--chain-id` slices (removing the partial-slice walk bypass), while routing out-of-order or invalid-sequence slices through strict full-chain verification.
+- Unconditionally require every contiguous run in a non-genesis slice to anchor to at least one verified signed checkpoint `(length, head_hash)`, even when `require_checkpoints=False` or remote checkpoint/key artifacts are empty or missing.
+- Guard `_compute_event_hash` against non-string `prev_event_hash` and `UnicodeEncodeError`.
+- Point package homepage and documentation to the live public verifier at `https://totum.run/transparency/verify`.
+
 ## [0.2.1] - 2026-11-23
 
 ### Security & Hardening

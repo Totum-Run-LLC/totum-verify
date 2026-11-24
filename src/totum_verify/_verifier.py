@@ -88,7 +88,7 @@ WELL_KNOWN_PATHS = {
     'checkpoints': '/.well-known/atelier_checkpoints.jsonl',
 }
 _USER_AGENT = (
-    "totum-verify/0.2.0 "
+    "totum-verify/0.2.1 "
     "(+https://github.com/Totum-Run-LLC/totum-verify)"
 )
 _HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$")
@@ -486,7 +486,8 @@ _COMPUTED_FIELDS = frozenset(
 
 def verify_chain(feed_paths=None, meta_path=None, checkpoints_path=None, keys_path=None,
                  meta_bytes: Optional[bytes] = None, checkpoints_bytes: Optional[bytes] = None,
-                 keys_bytes: Optional[bytes] = None, feed_rows: Optional[list] = None):
+                 keys_bytes: Optional[bytes] = None, feed_rows: Optional[list] = None,
+                 *, require_checkpoints: bool = False):
     """
     Verify chain integrity across all feed files or from pre-parsed rows.
 
@@ -549,11 +550,13 @@ def verify_chain(feed_paths=None, meta_path=None, checkpoints_path=None, keys_pa
                 # without it. Fall back to flat shape; will likely break.
                 chained_rows.append((idx, raw))
     elif feed_paths is not None:
-        # Local mode: read from feed_paths
+        # Local mode: read from feed_paths (fail closed on missing files or malformed rows)
         all_rows = []
         for feed_path in feed_paths:
             feed_path = Path(feed_path)
-            if not feed_path.exists():
+            if not feed_path.is_file():
+                if first_break_index is None:
+                    first_break_index = 0
                 continue
 
             with open(feed_path, "r", encoding="utf-8") as f:
@@ -565,8 +568,16 @@ def verify_chain(feed_paths=None, meta_path=None, checkpoints_path=None, keys_pa
                     try:
                         rec = json.loads(line)
                     except Exception:
-                        # Report the raw line as BREAK — never crash on bad data
+                        # Report the raw line as BREAK — never skip corrupted JSONL lines
+                        if first_break_index is None:
+                            first_break_index = line_num
                         all_rows.append((line_num, line, False, "BREAK"))
+                        continue
+
+                    if not isinstance(rec, dict):
+                        if first_break_index is None:
+                            first_break_index = line_num
+                        all_rows.append((line_num, rec, False, "BREAK"))
                         continue
 
                     # Classify: chained vs pre-chain
@@ -606,7 +617,10 @@ def verify_chain(feed_paths=None, meta_path=None, checkpoints_path=None, keys_pa
         chained_rows = []  # skip the walk loop
 
     # Walk the chained rows
+    walked_full_chain = False
+    hash_by_seq: dict[int, str] = {}
     if chained_rows:
+        walked_full_chain = True
         # Sort by seq (should already be sorted)
         chained_rows.sort(key=lambda x: x[1].get("seq", 0))
 
@@ -640,6 +654,9 @@ def verify_chain(feed_paths=None, meta_path=None, checkpoints_path=None, keys_pa
 
             if not ok_this_line and first_break_index is None:
                 first_break_index = chain_idx
+
+            if isinstance(stored_seq, int) and isinstance(stored_hash, str):
+                hash_by_seq[stored_seq] = stored_hash
 
             length += 1
             head_hash = stored_hash
@@ -691,6 +708,11 @@ def verify_chain(feed_paths=None, meta_path=None, checkpoints_path=None, keys_pa
             try:
                 checkpoint = json.loads(line)
             except json.JSONDecodeError:
+                checkpoint_break = True
+                continue
+
+            if not isinstance(checkpoint, dict):
+                checkpoint_break = True
                 continue
 
             # Extract signature and kid
@@ -698,6 +720,7 @@ def verify_chain(feed_paths=None, meta_path=None, checkpoints_path=None, keys_pa
             kid = checkpoint.get("kid", "")
 
             if not sig_b64_str or not kid:
+                checkpoint_break = True
                 continue
 
             # Look up public key
@@ -723,14 +746,31 @@ def verify_chain(feed_paths=None, meta_path=None, checkpoints_path=None, keys_pa
                 pub_bytes = base64.b64decode(pub_b64)
                 pub_key = ed25519.Ed25519PublicKey.from_public_bytes(pub_bytes)
                 pub_key.verify(sig_bytes, checkpoint_bytes_data)
-                # Signature valid
-                checkpoint_count += 1
-                last_signed_at = checkpoint.get("ts_utc")
-                last_kid = kid
             except Exception:
                 # Signature verification failed
                 checkpoint_break = True
                 continue
+
+            # Bind signed checkpoint head_hash & length to the walked chain when available
+            if walked_full_chain:
+                ckpt_len = checkpoint.get("length")
+                ckpt_head = checkpoint.get("head_hash")
+                if isinstance(ckpt_len, int) and not isinstance(ckpt_len, bool):
+                    if ckpt_len > length or ckpt_len < 1:
+                        checkpoint_break = True
+                        continue
+                    if isinstance(ckpt_head, str) and ckpt_head:
+                        if hash_by_seq.get(ckpt_len) != ckpt_head:
+                            checkpoint_break = True
+                            continue
+
+            # Signature (and chain binding, when applicable) valid
+            checkpoint_count += 1
+            last_signed_at = checkpoint.get("ts_utc")
+            last_kid = kid
+
+    if require_checkpoints and checkpoint_count == 0:
+        checkpoint_break = True
 
     # If chain was ok but checkpoints had issues, mark it
     chain_ok = first_break_index is None
@@ -940,6 +980,7 @@ def main():
             checkpoints_bytes=checkpoints_bytes,
             keys_bytes=keys_bytes,
             feed_rows=feed_rows,
+            require_checkpoints=(feed_rows is None),
         )
     else:
         # Local mode

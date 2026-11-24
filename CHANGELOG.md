@@ -2,6 +2,13 @@
 
 All notable changes to `totum-verify` are documented in this file.
 
+## [0.2.1] - 2026-11-23
+
+### Security & Hardening
+- Fail closed on missing `--feed` files and non-JSON/non-object lines in local feeds instead of skipping them.
+- Fail closed in remote checkpoints-only CLI mode when zero valid signatures are verified or malformed checkpoint lines are present.
+- Bind verified checkpoint `head_hash` and `length` against the walked chain in full-chain mode (detecting checkpoint/feed substitution and tail truncation).
+
 ## [0.2.0] - 2026-11-23
 
 ### Added

@@ -273,3 +273,44 @@ def test_split_dns_non_public_answer_refused(monkeypatch):
     monkeypatch.setattr(v.socket, "getaddrinfo", fake_getaddrinfo)
     with pytest.raises(RemoteFetchError, match="non-public address"):
         v._http_get("https://rebind.example.com/.well-known/x", "meta")
+
+
+def test_missing_and_corrupt_feed_fail_closed(tmp_path):
+    meta_path = tmp_path / "chain_meta.json"
+    meta_path.write_text(json.dumps({"chain_id": "test", "alg": "sha256", "schema_version": 1}), encoding="utf-8")
+    assert verify_chain(feed_paths=[tmp_path / "missing.jsonl"], meta_path=meta_path)["ok"] is False
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text('{"ts":"2026-11-23T00:00:00Z"}\n{not-json\n', encoding="utf-8")
+    res = verify_chain(feed_paths=[bad], meta_path=meta_path)
+    assert res["ok"] is False and res["first_break_index"] == 1
+
+
+def test_checkpoints_only_cli_fails_closed_on_zero_checkpoints(monkeypatch):
+    priv, pub_b64, kid = _make_keypair("k-empty")
+    artifacts = {
+        "meta": _canonical({"chain_id": "atelier_audit_chain_v3", "alg": "sha256", "schema_version": 1}),
+        "keys": _canonical({"current": kid, "keys": {kid: {"alg": "ed25519", "pub_b64": pub_b64}}}),
+        "checkpoints": b"",
+    }
+    monkeypatch.setattr(v, "_fetch", lambda _u, k: artifacts[k])
+    monkeypatch.setattr(sys, "argv", ["totum-verify", "--remote", "https://example.com"])
+    with pytest.raises(SystemExit) as exc:
+        v.main()
+    assert exc.value.code == 1
+
+
+def test_checkpoint_head_hash_and_truncation_detected(tmp_path):
+    feed_path, meta_path, head_hash, length = _build_chain(tmp_path, count=3)
+    priv, pub_b64, kid = _make_keypair("k-bind")
+    keys_path = tmp_path / "keys.json"
+    keys_path.write_text(json.dumps({"current": kid, "keys": {kid: {"alg": "ed25519", "pub_b64": pub_b64}}}), encoding="utf-8")
+
+    def _ckpt(h: str, n: int) -> Path:
+        u = {"kid": kid, "ts_utc": "2026-11-23T12:00:00Z", "head_hash": h, "length": n, "schema_version": 1}
+        p = tmp_path / "checkpoints.jsonl"
+        p.write_text(json.dumps({**u, "sig_b64": base64.b64encode(priv.sign(_canonical(u))).decode()}) + "\n", encoding="utf-8")
+        return p
+
+    assert verify_chain(feed_paths=[feed_path], meta_path=meta_path, checkpoints_path=_ckpt(head_hash, length), keys_path=keys_path)["ok"] is True
+    assert verify_chain(feed_paths=[feed_path], meta_path=meta_path, checkpoints_path=_ckpt("0" * 64, length), keys_path=keys_path)["ok"] is False
+    assert verify_chain(feed_paths=[feed_path], meta_path=meta_path, checkpoints_path=_ckpt(head_hash, length + 2), keys_path=keys_path)["ok"] is False

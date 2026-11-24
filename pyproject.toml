@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "totum-verify"
+version = "0.2.0"
+description = "Hermetic public-chain and Ed25519 receipt verifier for the Totum audit ledger."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+  { name = "Totum Run LLC", email = "security@totum.run" },
+]
+keywords = ["audit", "chain", "verifier", "ed25519", "receipt", "cryptography", "totum"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Security :: Cryptography",
+]
+dependencies = [
+  "cryptography>=41,<47",
+]
+
+[project.urls]
+Homepage = "https://totum.run/verify"
+Source = "https://github.com/Totum-Run-LLC/totum-verify"
+Issues = "https://github.com/Totum-Run-LLC/totum-verify/issues"
+Changelog = "https://github.com/Totum-Run-LLC/totum-verify/blob/main/CHANGELOG.md"
+
+[project.scripts]
+totum-verify = "totum_verify.__main__:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["totum_verify*"]
+
+[tool.setuptools.package-data]
+totum_verify = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

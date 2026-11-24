@@ -1,5 +1,6 @@
 # totum-verify
 
+[![PyPI version](https://img.shields.io/pypi/v/totum-verify.svg)](https://pypi.org/project/totum-verify/)
 [![CI](https://github.com/Totum-Run-LLC/totum-verify/actions/workflows/ci.yml/badge.svg)](https://github.com/Totum-Run-LLC/totum-verify/actions/workflows/ci.yml)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
@@ -12,7 +13,7 @@ Re-verifies every SHA-256 hash link, metadata-bound transaction ID, and Ed25519 
 
 ## Install
 
-From PyPI (once published):
+From PyPI:
 
 ```bash
 pip install totum-verify

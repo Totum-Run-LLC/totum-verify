@@ -170,7 +170,11 @@ assert chain_result["ok"] is True
 
 ## Links & Security
 
+- Totum platform: [`https://totum.run`](https://totum.run)
+- Public transparency ledger & weekly aggregate refusal counts: [`https://totum.run/transparency`](https://totum.run/transparency)
 - Live proof portal: [`https://totum.run/transparency/verify`](https://totum.run/transparency/verify)
+- Security, data isolation & offline verification guide: [`https://totum.run/blog/totum-security-privacy-and-offline-verification`](https://totum.run/blog/totum-security-privacy-and-offline-verification)
+- Machine-readable documentation digest (`llms.txt`): [`https://totum.run/llms.txt`](https://totum.run/llms.txt)
 - Security policy & vulnerability disclosure: [`SECURITY.md`](./SECURITY.md)
 - Contributing guide: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - License: [MIT](./LICENSE)
